@@ -55,6 +55,9 @@ struct RemotePort {
         bool need_sync;
         struct rp_pkt rsp;
         uint64_t quantum;
+        int64_t simTimeSync;
+        int64_t simTimeMemAccess;
+        int64_t simTimeBase;
     } sync;
 
     QemuMutex rsp_mutex;

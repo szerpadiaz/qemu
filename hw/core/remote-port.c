@@ -219,6 +219,9 @@ void rp_sync_vmclock(RemotePort *s, int64_t lclk, int64_t rclk)
 
 static void rp_cmd_hello(RemotePort *s, struct rp_pkt *pkt)
 {
+    int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+    fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", (int64_t)0, (int64_t) 0, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
+
     s->peer.version = pkt->hello.version;
     if (pkt->hello.version.major != RP_VERSION_MAJOR) {
         error_report("remote-port version missmatch remote=%d.%d local=%d.%d\n",
@@ -307,6 +310,8 @@ static void syncresp_timer_hit(void *opaque)
 
 static void sync_timer_hit(void *opaque)
 {
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+
     RemotePort *s = REMOTE_PORT(opaque);
     int64_t clk;
     int64_t rclk;
@@ -336,6 +341,10 @@ static void sync_timer_hit(void *opaque)
 
     rp_sync_vmclock(s, clk, rclk);
     rp_restart_sync_timer(s);
+
+    int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+    s->sync.simTimeSync += (current - start);
+    fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", clk, rclk, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
 }
 
 static char *rp_sanitize_prefix(RemotePort *s)
@@ -763,6 +772,10 @@ static void rp_realize(DeviceState *dev, Error **errp)
        After config negotiation with the peer, sync.quantum value might
        change.  */
     s->sync.quantum = s->peer.local_cfg.quantum;
+
+    s->sync.simTimeSync = 0;
+    s->sync.simTimeMemAccess = 0;
+    s->sync.simTimeBase = qemu_clock_get_ns(QEMU_CLOCK_HOST);
 
     s->sync.bh = qemu_bh_new(sync_timer_hit, s);
     s->sync.bh_resp = qemu_bh_new(syncresp_timer_hit, s);
