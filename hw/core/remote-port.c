@@ -23,6 +23,8 @@
 
 #ifndef _WIN32
 #include <sys/mman.h>
+#include <sys/shm.h>
+#include <sys/ipc.h>
 #endif
 
 #include "hw/fdt_generic_util.h"
@@ -59,10 +61,90 @@ bool rp_time_warp_enable(bool en)
     return ret;
 }
 
+static char *rp_autocreate_descShm(RemotePort *s);
+static int createShm(RemotePort *s);
 static void rp_process(RemotePort *s);
 static void rp_event_read(void *opaque);
 static void sync_timer_hit(void *opaque);
 static void syncresp_timer_hit(void *opaque);
+
+static int createShm(RemotePort *s)
+{
+	s->sync.shmid = -1;
+    // 1. Generate unique Keys for shared memory
+	//		- The path to a file the both processes can read
+	//		- An arbitrary id to generate a unique key
+    char *fileName = rp_autocreate_descShm(s);
+	const int id = 'M';
+    key_t key = ftok(fileName,id);
+    //fprintf(stderr, "FILE NAME FOR SHARED MEMORY: %s \n", fileName);
+    free(fileName);
+    if(key == -1){
+        error_report("%s: Unable to create shared-memory's key \n", s->prefix);
+        return -1;
+    }
+
+    //2. Get identifier for shared memory
+    size_t shmSize = sizeof(s->sync.clks);
+    int shmPermissions = 0666|IPC_CREAT;
+    s->sync.shmid = shmget(key, shmSize, shmPermissions);
+    if(s->sync.shmid == -1){
+        error_report("%s: Unable to create shared-memory's shmid \n", s->prefix);
+        return -1;
+    }
+
+    //3.  Attach to shared memory to get a pointer to it
+    s->sync.shData = (int64_t*) shmat(s->sync.shmid, (void*)0, 0);
+    if(s->sync.shData == (int64_t*)(-1)){
+        error_report("%s: Unable to attached to shared-memory \n", s->prefix);
+        return -1;
+    }
+    memset(s->sync.shData, 0, shmSize);
+
+    fprintf(stderr, "CREATED SHARED MEMORY: %d \n", s->sync.shmid);
+    //shmdt(s->sync.shData);
+    //shmctl(s->sync.shmid, IPC_RMID, NULL);
+    return 0;
+}
+
+static void rp_update_clocks(RemotePort *s)
+{
+	int64_t lclk =  rp_normalized_vmclk(s);
+	int64_t rclk;
+
+	s->sync.shData[0] = lclk;
+	rclk = s->sync.shData[1];
+
+	if(lclk > (rclk + s->sync.quantum))
+	{
+		qemu_bh_schedule(s->sync.bh_pause_resume_vm);
+		//fprintf(stderr, "PAUSE (%ld, %ld) \n", lclk, rclk);
+
+		while(lclk > rclk)
+		{
+			rclk = s->sync.shData[1];
+		}
+
+		qemu_bh_schedule(s->sync.bh_pause_resume_vm);
+		//fprintf(stderr, "RESUME (%ld, %ld) \n", lclk, rclk);
+	}
+}
+
+static void rp_pause_resume_vm(void *opaque)
+{
+	RemotePort *s = REMOTE_PORT(opaque);
+
+    if(!s->sync.paused)
+    {
+    	pause_all_vcpus();
+    	s->sync.paused = true;
+    }
+    else
+    {
+    	resume_all_vcpus();
+        s->sync.paused = false;
+    }
+}
 
 static void rp_pkt_dump(const char *prefix, const char *buf, size_t len)
 {
@@ -374,6 +456,19 @@ static char *rp_autocreate_chardesc(RemotePort *s, bool server)
     return chardesc;
 }
 
+static char *rp_autocreate_descShm(RemotePort *s)
+{
+    char *prefix;
+    char *chardesc;
+    int r;
+
+    prefix = rp_sanitize_prefix(s);
+    r = asprintf(&chardesc, "%s/qemu-rport-%s",machine_path, prefix);
+    assert(r > 0);
+    free(prefix);
+    return chardesc;
+}
+
 static Chardev *rp_autocreate_chardev(RemotePort *s, char *name)
 {
     Chardev *chr;
@@ -610,6 +705,17 @@ static void rp_read_pkt(RemotePort *s, RemotePortDynPkt *dpkt)
     }
 }
 
+static void *rp_sync_thread(void *arg)
+{
+    RemotePort *s = REMOTE_PORT(arg);
+
+    while(1)
+    {
+    	rp_update_clocks(s);
+    }
+    return NULL;
+}
+
 static void *rp_protocol_thread(void *arg)
 {
     RemotePort *s = REMOTE_PORT(arg);
@@ -632,6 +738,7 @@ static void *rp_protocol_thread(void *arg)
         wpos &= ARRAY_SIZE(s->rx_queue.pkt) - 1;
         dpkt = &s->rx_queue.pkt[wpos];
 
+        //rp_update_clocks(s);
         rp_read_pkt(s, dpkt);
         if (0) {
             rp_pkt_dump("rport-pkt", (void *) dpkt->pkt,
@@ -767,6 +874,10 @@ static void rp_realize(DeviceState *dev, Error **errp)
     qemu_set_fd_handler(s->event.pipe.read, rp_event_read, NULL, s);
 #endif
 
+    if (createShm(s) == -1) {
+    	exit(EXIT_FAILURE);
+    }
+    s->sync.paused = false;
 
     /* Pick up the quantum from the local property setup.
        After config negotiation with the peer, sync.quantum value might
@@ -778,6 +889,7 @@ static void rp_realize(DeviceState *dev, Error **errp)
     s->sync.simTimeBase = qemu_clock_get_ns(QEMU_CLOCK_HOST);
 
     s->sync.bh = qemu_bh_new(sync_timer_hit, s);
+    s->sync.bh_pause_resume_vm = qemu_bh_new(rp_pause_resume_vm, s);
     s->sync.bh_resp = qemu_bh_new(syncresp_timer_hit, s);
     s->sync.ptimer = ptimer_init(s->sync.bh, PTIMER_POLICY_DEFAULT);
     s->sync.ptimer_resp = ptimer_init(s->sync.bh_resp, PTIMER_POLICY_DEFAULT);
@@ -789,6 +901,8 @@ static void rp_realize(DeviceState *dev, Error **errp)
     qemu_sem_init(&s->rx_queue.sem, ARRAY_SIZE(s->rx_queue.pkt) - 1);
     qemu_thread_create(&s->thread, "remote-port", rp_protocol_thread, s,
                        QEMU_THREAD_JOINABLE);
+    qemu_thread_create(&s->sync.thread, "remote-port-sync", rp_sync_thread, s,
+    		QEMU_THREAD_JOINABLE);
     rp_restart_sync_timer(s);
 }
 

@@ -58,6 +58,13 @@ struct RemotePort {
         int64_t simTimeSync;
         int64_t simTimeMemAccess;
         int64_t simTimeBase;
+
+        int64_t clks[2];
+        int64_t *shData;
+        int 	shmid;
+        QemuThread thread;
+        bool paused;
+        QEMUBH *bh_pause_resume_vm;
     } sync;
 
     QemuMutex rsp_mutex;
