@@ -140,7 +140,7 @@ static void rp_io_access(MemoryTransaction *tr)
     rp_rsp_mutex_unlock(s->rp);
     rp_sync_vmclock(s->rp, in.clk, rclk);
     /* Reads are sync-points, roll the sync timer.  */
-    rp_restart_sync_timer(s->rp);
+    //rp_restart_sync_timer(s->rp);
     rp_leave_iothread(s->rp);
     DB_PRINT_L(1, "\n");
 

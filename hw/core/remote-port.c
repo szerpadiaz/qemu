@@ -103,45 +103,6 @@ static int createShm(RemotePort *s)
     return 0;
 }
 
-static void rp_update_clocks(RemotePort *s)
-{
-	int64_t lclk =  rp_normalized_vmclk(s);
-	int64_t rclk;
-
-	s->sync.shData[0] = lclk;
-	rclk = s->sync.shData[1];
-
-	if(lclk > (rclk + s->sync.quantum))
-	{
-		qemu_bh_schedule(s->sync.bh_pause_resume_vm);
-		//fprintf(stderr, "PAUSE (%ld, %ld) \n", lclk, rclk);
-
-		while(lclk > rclk)
-		{
-			rclk = s->sync.shData[1];
-		}
-
-		qemu_bh_schedule(s->sync.bh_pause_resume_vm);
-		//fprintf(stderr, "RESUME (%ld, %ld) \n", lclk, rclk);
-	}
-}
-
-static void rp_pause_resume_vm(void *opaque)
-{
-	RemotePort *s = REMOTE_PORT(opaque);
-
-    if(!s->sync.paused)
-    {
-    	pause_all_vcpus();
-    	s->sync.paused = true;
-    }
-    else
-    {
-    	resume_all_vcpus();
-        s->sync.paused = false;
-    }
-}
-
 static void rp_pkt_dump(const char *prefix, const char *buf, size_t len)
 {
     qemu_hexdump(buf, stdout, prefix, len);
@@ -168,6 +129,7 @@ int64_t rp_normalized_vmclk(RemotePort *s)
 
     clk = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     clk -= s->peer.clk_base;
+    atomic_set(&s->sync.shData[0], clk);
     return clk;
 }
 
@@ -396,6 +358,7 @@ static void sync_timer_hit(void *opaque)
     RemotePortDynPkt rsp;
 
     clk = rp_normalized_vmclk(s);
+
     if (s->sync.resp_timer_enabled) {
         SYNCD(printf("%s: sync while delaying a resp! clk=%lu\n",
                      s->prefix, clk));
@@ -701,13 +664,42 @@ static void rp_read_pkt(RemotePort *s, RemotePortDynPkt *dpkt)
     }
 }
 
+static void rp_pause_resume_vm(void *opaque)
+{
+	RemotePort *s = REMOTE_PORT(opaque);
+	pause_all_vcpus();
+
+	//wait until clocks are in sync
+	int64_t lclk =  rp_normalized_vmclk(s);
+	int64_t rclk = atomic_read(&s->sync.shData[1]);
+	while(lclk > (rclk + s->sync.quantum))
+	{
+		rclk = atomic_read(&s->sync.shData[1]);
+	}
+	resume_all_vcpus();
+	atomic_set(&s->sync.paused, false);
+}
+
 static void *rp_sync_thread(void *arg)
 {
     RemotePort *s = REMOTE_PORT(arg);
 
+	int64_t lclk;
+	int64_t rclk;
+
     while(1)
     {
-    	rp_update_clocks(s);
+    	lclk =  rp_normalized_vmclk(s);
+    	rclk = atomic_read(&s->sync.shData[1]);
+
+    	if(lclk > (rclk + s->sync.quantum))
+    	{
+    		if(!atomic_read(&s->sync.paused))
+    		{
+    			atomic_set(&s->sync.paused, true);
+    			qemu_bh_schedule(s->sync.bh_pause_resume_vm);
+    		}
+    	}
     }
     return NULL;
 }
@@ -899,7 +891,7 @@ static void rp_realize(DeviceState *dev, Error **errp)
                        QEMU_THREAD_JOINABLE);
     qemu_thread_create(&s->sync.thread, "remote-port-sync", rp_sync_thread, s,
     		QEMU_THREAD_JOINABLE);
-    rp_restart_sync_timer(s);
+    //rp_restart_sync_timer(s);
 }
 
 static const VMStateDescription vmstate_rp = {
