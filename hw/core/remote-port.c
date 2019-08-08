@@ -77,7 +77,6 @@ static int createShm(RemotePort *s)
     char *fileName = rp_autocreate_descShm(s);
 	const int id = 'M';
     key_t key = ftok(fileName,id);
-    //fprintf(stderr, "FILE NAME FOR SHARED MEMORY: %s \n", fileName);
     free(fileName);
     if(key == -1){
         error_report("%s: Unable to create shared-memory's key \n", s->prefix);
@@ -101,9 +100,6 @@ static int createShm(RemotePort *s)
     }
     memset(s->sync.shData, 0, shmSize);
 
-    fprintf(stderr, "CREATED SHARED MEMORY: %d \n", s->sync.shmid);
-    //shmdt(s->sync.shData);
-    //shmctl(s->sync.shmid, IPC_RMID, NULL);
     return 0;
 }
 
@@ -301,8 +297,8 @@ void rp_sync_vmclock(RemotePort *s, int64_t lclk, int64_t rclk)
 
 static void rp_cmd_hello(RemotePort *s, struct rp_pkt *pkt)
 {
-    int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-    fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", (int64_t)0, (int64_t) 0, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
+	//int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+	//fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", (int64_t)0, (int64_t) 0, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
 
     s->peer.version = pkt->hello.version;
     if (pkt->hello.version.major != RP_VERSION_MAJOR) {
@@ -392,7 +388,7 @@ static void syncresp_timer_hit(void *opaque)
 
 static void sync_timer_hit(void *opaque)
 {
-    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+    //int64_t start = qemu_clock_get_ns(QEMU_CLOCK_HOST);
 
     RemotePort *s = REMOTE_PORT(opaque);
     int64_t clk;
@@ -424,9 +420,9 @@ static void sync_timer_hit(void *opaque)
     rp_sync_vmclock(s, clk, rclk);
     rp_restart_sync_timer(s);
 
-    int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-    s->sync.simTimeSync += (current - start);
-    fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", clk, rclk, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
+    //int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+    //s->sync.simTimeSync += (current - start);
+    //fprintf(stderr, "HIT: %ld ; %ld ; %ld ; %ld ; %ld \n", clk, rclk, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
 }
 
 static char *rp_sanitize_prefix(RemotePort *s)
