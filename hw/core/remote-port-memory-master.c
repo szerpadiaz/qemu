@@ -139,16 +139,18 @@ static void rp_io_access(MemoryTransaction *tr)
     rp_resp_slot_done(s->rp, rsp_slot);
     rp_rsp_mutex_unlock(s->rp);
     rp_sync_vmclock(s->rp, in.clk, rclk);
+#ifdef WALLCLOCK_SYNC_EN
+    rclk = atomic_read(&s->rp->sync.shData[1]);
+#else
     /* Reads are sync-points, roll the sync timer.  */
-    //rp_restart_sync_timer(s->rp);
+    rp_restart_sync_timer(s->rp);
+#endif
     rp_leave_iothread(s->rp);
     DB_PRINT_L(1, "\n");
 
-    //rclk = atomic_read(&s->rp->sync.shData[1]);
     //int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
     //s->rp->sync.simTimeMemAccess += (current - start);
     //fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", in.clk, rclk, current - s->rp->sync.simTimeBase, s->rp->sync.simTimeSync, s->rp->sync.simTimeMemAccess);
-
 }
 
 static const MemoryRegionOps rp_ops_template = {

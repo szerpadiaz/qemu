@@ -385,7 +385,7 @@ static void sync_timer_hit(void *opaque)
 
     //int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
     //s->sync.simTimeSync += (current - start);
-    //fprintf(stderr, "HIT: %ld ; %ld ; %ld ; %ld ; %ld \n", clk, rclk, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
+    //fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", clk, rclk, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
 }
 
 static char *rp_sanitize_prefix(RemotePort *s)
@@ -680,6 +680,7 @@ static void rp_pause_resume_vm(void *opaque)
 	atomic_set(&s->sync.paused, false);
 }
 
+#ifdef WALLCLOCK_SYNC_EN
 static void *rp_sync_thread(void *arg)
 {
     RemotePort *s = REMOTE_PORT(arg);
@@ -703,6 +704,7 @@ static void *rp_sync_thread(void *arg)
     }
     return NULL;
 }
+#endif
 
 static void *rp_protocol_thread(void *arg)
 {
@@ -889,9 +891,12 @@ static void rp_realize(DeviceState *dev, Error **errp)
     qemu_sem_init(&s->rx_queue.sem, ARRAY_SIZE(s->rx_queue.pkt) - 1);
     qemu_thread_create(&s->thread, "remote-port", rp_protocol_thread, s,
                        QEMU_THREAD_JOINABLE);
+#ifdef WALLCLOCK_SYNC_EN
     qemu_thread_create(&s->sync.thread, "remote-port-sync", rp_sync_thread, s,
     		QEMU_THREAD_JOINABLE);
-    //rp_restart_sync_timer(s);
+#else
+    rp_restart_sync_timer(s);
+#endif
 }
 
 static const VMStateDescription vmstate_rp = {

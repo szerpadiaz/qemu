@@ -16,6 +16,8 @@
 #include "chardev/char-fe.h"
 #include "hw/ptimer.h"
 
+#define WALLCLOCK_SYNC_EN
+
 #define TYPE_REMOTE_PORT "remote-port"
 #define REMOTE_PORT(obj) OBJECT_CHECK(RemotePort, (obj), TYPE_REMOTE_PORT)
 
