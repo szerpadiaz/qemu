@@ -350,8 +350,9 @@ static void syncresp_timer_hit(void *opaque)
 
 static void sync_timer_hit(void *opaque)
 {
-    //int64_t start = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-
+#ifdef LOG_SYNC_EN
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+#endif
     RemotePort *s = REMOTE_PORT(opaque);
     int64_t clk;
     int64_t rclk;
@@ -382,10 +383,11 @@ static void sync_timer_hit(void *opaque)
 
     rp_sync_vmclock(s, clk, rclk);
     rp_restart_sync_timer(s);
-
-    //int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-    //s->sync.simTimeSync += (current - start);
-    //fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", clk, rclk, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
+#ifdef LOG_SYNC_EN
+    int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+    s->sync.simTimeSync += (current - start);
+    fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", clk, rclk, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
+#endif
 }
 
 static char *rp_sanitize_prefix(RemotePort *s)
@@ -668,14 +670,27 @@ static void rp_pause_resume_vm(void *opaque)
 {
 	RemotePort *s = REMOTE_PORT(opaque);
 	pause_all_vcpus();
-
-	//wait until clocks are in sync
 	int64_t lclk =  rp_normalized_vmclk(s);
 	int64_t rclk = atomic_read(&s->sync.shData[1]);
+
+#ifdef LOG_SYNC_EN
+	fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n",
+	  		lclk, rclk, qemu_clock_get_ns(QEMU_CLOCK_HOST) - s->sync.simTimeBase,
+			s->sync.simTimeSync, s->sync.simTimeMemAccess);
+#endif
+
+	//wait until clocks are in sync
 	while(lclk > (rclk + s->sync.quantum))
 	{
 		rclk = atomic_read(&s->sync.shData[1]);
 	}
+
+#ifdef LOG_SYNC_EN
+	fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n",
+	  		lclk, rclk, qemu_clock_get_ns(QEMU_CLOCK_HOST) - s->sync.simTimeBase,
+			s->sync.simTimeSync, s->sync.simTimeMemAccess);
+#endif
+
 	resume_all_vcpus();
 	atomic_set(&s->sync.paused, false);
 }

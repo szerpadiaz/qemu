@@ -69,8 +69,9 @@ struct RemotePortMemoryMaster {
 
 static void rp_io_access(MemoryTransaction *tr)
 {
-    //int64_t start = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-
+#ifdef LOG_SYNC_EN
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+#endif
     uint64_t addr = tr->addr;
     RemotePortMap *map = tr->opaque;
     RemotePortMemoryMaster *s = map->parent;
@@ -148,9 +149,11 @@ static void rp_io_access(MemoryTransaction *tr)
     rp_leave_iothread(s->rp);
     DB_PRINT_L(1, "\n");
 
-    //int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-    //s->rp->sync.simTimeMemAccess += (current - start);
-    //fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", in.clk, rclk, current - s->rp->sync.simTimeBase, s->rp->sync.simTimeSync, s->rp->sync.simTimeMemAccess);
+#ifdef LOG_SYNC_EN
+    int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
+    s->rp->sync.simTimeMemAccess += (current - start);
+    fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", in.clk, rclk, current - s->rp->sync.simTimeBase, s->rp->sync.simTimeSync, s->rp->sync.simTimeMemAccess);
+#endif
 }
 
 static const MemoryRegionOps rp_ops_template = {
