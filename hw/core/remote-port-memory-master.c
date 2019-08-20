@@ -141,7 +141,8 @@ static void rp_io_access(MemoryTransaction *tr)
     rp_rsp_mutex_unlock(s->rp);
     rp_sync_vmclock(s->rp, in.clk, rclk);
 #ifdef WALLCLOCK_SYNC_EN
-    rclk = atomic_read(&s->rp->sync.shData[1]);
+    atomic_set(s->rp->sync.lclk, in.clk);
+    rclk = atomic_read(s->rp->sync.rclk);
 #else
     /* Reads are sync-points, roll the sync timer.  */
     rp_restart_sync_timer(s->rp);
