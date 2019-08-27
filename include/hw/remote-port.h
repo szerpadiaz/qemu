@@ -16,7 +16,7 @@
 #include "chardev/char-fe.h"
 #include "hw/ptimer.h"
 
-#define WALLCLOCK_SYNC_EN
+//#define SH_CLK_EN
 //#define LOG_SYNC_EN
 
 #define TYPE_REMOTE_PORT "remote-port"
