@@ -61,51 +61,120 @@ bool rp_time_warp_enable(bool en)
     return ret;
 }
 
-static char *rp_autocreate_descShm(RemotePort *s);
-static int rp_sync_createSharedWallclocks(RemotePort *s);
 static void rp_process(RemotePort *s);
 static void rp_event_read(void *opaque);
 static void sync_timer_hit(void *opaque);
 static void syncresp_timer_hit(void *opaque);
+static char *rp_autocreate_descShm(RemotePort *s);
 
-static int rp_sync_createSharedWallclocks(RemotePort *s)
+#ifdef SH_CLK_EN
+static int rp_sharedClock_init(RemotePortSharedClock *sClk, char *shMemDesc, uint64_t quantum);
+static int64_t rp_sharedClock_vmclk(RemotePortSharedClock *sClk);
+static void *rp_sharedClock_thread(void *arg);
+static void rp_sharedClock_sync(void *opaque);
+
+static int rp_sharedClock_init(RemotePortSharedClock *sClk, char *shMemDesc, uint64_t quantum)
 {
-	char *fileName = rp_autocreate_descShm(s);
-
     // 1. Generate unique Keys for shared memory
 	//		- The path to a file the both processes can read
 	//		- An arbitrary id to generate a unique key
 	const int id = 'M';
-    key_t key = ftok(fileName,id);
-    free(fileName);
+    key_t key = ftok(shMemDesc, id);
     if(key == -1){
-        error_report("%s: Unable to create shared-memory's key \n", s->prefix);
         return -1;
     }
 
     //2. Get identifier for shared memory
-    size_t shmSize = sizeof(*(s->sync.lclk)) + sizeof(*(s->sync.rclk));
+    size_t shmSize = sizeof(*(sClk->lclk)) + sizeof(*(sClk->rclk));
     int shmPermissions = 0666|IPC_CREAT;
     int shmid = shmget(key, shmSize, shmPermissions);
     if(shmid == -1){
-        error_report("%s: Unable to create shared-memory's shmid \n", s->prefix);
         return -1;
     }
 
     //3.  Attach to shared memory to get a pointer to it
     int64_t* shData = (int64_t*) shmat(shmid, (void*)0, 0);
     if(shData == (int64_t*)(-1)){
-        error_report("%s: Unable to attached to shared-memory \n", s->prefix);
         return -1;
     }
     memset(shData, 0, shmSize);
 
-    //4. Map shared memory to wallclocks
-    s->sync.lclk = &shData[0];
-    s->sync.rclk = &shData[1];
+    //4. Map shared memory to simulation clocks
+    sClk->lclk = &shData[0];
+    sClk->rclk = &shData[1];
+
+    //5. init synchronization elements
+    sClk->clk_base = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    sClk->quantum = quantum;
+    sClk->bh_sync = qemu_bh_new(rp_sharedClock_sync, sClk);
+    qemu_thread_create(&sClk->thread, "remote-port-sharedClock",
+    		rp_sharedClock_thread, sClk, QEMU_THREAD_JOINABLE);
 
     return shmid;
 }
+
+static int64_t rp_sharedClock_vmclk(RemotePortSharedClock *sClk)
+{
+    int64_t lclk;
+    lclk = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    lclk -= sClk->clk_base;
+    return lclk;
+}
+
+static void *rp_sharedClock_thread(void *arg)
+{
+	RemotePortSharedClock * sClk = arg;
+
+    //Continuously tracking of clocks
+	sClk->paused = false;
+    int64_t lclk;
+	int64_t rclk;
+    while(1)
+    {
+    	lclk =  rp_sharedClock_vmclk(sClk);
+    	atomic_set(sClk->lclk, lclk);
+    	rclk = atomic_read(sClk->rclk);
+
+    	if(lclk > (rclk + sClk->quantum))
+    	{
+    		if(!atomic_read(&sClk->paused))
+    		{
+    			//Pause the local clock
+    			atomic_set(&sClk->paused, true);
+    			qemu_bh_schedule(sClk->bh_sync);
+    		}
+    	}
+    }
+    return NULL;
+}
+
+static void rp_sharedClock_sync(void *opaque)
+{
+	RemotePortSharedClock * sClk = opaque;
+	pause_all_vcpus();
+
+	int64_t lclk =  rp_sharedClock_vmclk(sClk);
+	atomic_set(sClk->lclk, lclk);
+	int64_t rclk = atomic_read(sClk->rclk);
+
+#ifdef LOG_SYNC_EN
+	fprintf(stderr, "%ld ; %ld \n", lclk, rclk);
+#endif
+
+	//wait until clocks are in sync
+	while(lclk > (rclk + sClk->quantum))
+	{
+		rclk = atomic_read(sClk->rclk);
+	}
+
+#ifdef LOG_SYNC_EN
+	fprintf(stderr, "%ld ; %ld \n", lclk, rclk);
+#endif
+
+	resume_all_vcpus();
+	atomic_set(&sClk->paused, false);
+}
+#endif
 
 static void rp_pkt_dump(const char *prefix, const char *buf, size_t len)
 {
@@ -262,9 +331,6 @@ void rp_sync_vmclock(RemotePort *s, int64_t lclk, int64_t rclk)
 
 static void rp_cmd_hello(RemotePort *s, struct rp_pkt *pkt)
 {
-	//int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-	//fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", (int64_t)0, (int64_t) 0, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
-
     s->peer.version = pkt->hello.version;
     if (pkt->hello.version.major != RP_VERSION_MAJOR) {
         error_report("remote-port version missmatch remote=%d.%d local=%d.%d\n",
@@ -353,9 +419,6 @@ static void syncresp_timer_hit(void *opaque)
 
 static void sync_timer_hit(void *opaque)
 {
-#ifdef LOG_SYNC_EN
-    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-#endif
     RemotePort *s = REMOTE_PORT(opaque);
     int64_t clk;
     int64_t rclk;
@@ -387,9 +450,7 @@ static void sync_timer_hit(void *opaque)
     rp_sync_vmclock(s, clk, rclk);
     rp_restart_sync_timer(s);
 #ifdef LOG_SYNC_EN
-    int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-    s->sync.simTimeSync += (current - start);
-    fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", clk, rclk, current - s->sync.simTimeBase, s->sync.simTimeSync, s->sync.simTimeMemAccess);
+    fprintf(stderr, "%ld ; %ld \n", clk, rclk);
 #endif
 }
 
@@ -669,66 +730,6 @@ static void rp_read_pkt(RemotePort *s, RemotePortDynPkt *dpkt)
     }
 }
 
-static void rp_sync_wallclocks(void *opaque)
-{
-	RemotePort *rp = REMOTE_PORT(opaque);
-	pause_all_vcpus();
-
-	int64_t lclk =  rp_normalized_vmclk(rp);
-	atomic_set(rp->sync.lclk, lclk);
-	int64_t rclk = atomic_read(rp->sync.rclk);
-
-#ifdef LOG_SYNC_EN
-	fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n",
-	  		lclk, rclk, qemu_clock_get_ns(QEMU_CLOCK_HOST) - rp->sync.simTimeBase,
-			rp->sync.simTimeSync, rp->sync.simTimeMemAccess);
-#endif
-
-	//wait until clocks are in sync
-	while(lclk > (rclk + rp->sync.quantum))
-	{
-		rclk = atomic_read(rp->sync.rclk);
-	}
-
-#ifdef LOG_SYNC_EN
-	fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n",
-	  		lclk, rclk, qemu_clock_get_ns(QEMU_CLOCK_HOST) - rp->sync.simTimeBase,
-			rp->sync.simTimeSync, rp->sync.simTimeMemAccess);
-#endif
-
-	resume_all_vcpus();
-	atomic_set(&rp->sync.paused, false);
-}
-
-#ifdef WALLCLOCK_SYNC_EN
-static void *rp_sync_thread(void *arg)
-{
-    RemotePort *rp = REMOTE_PORT(arg);
-
-    //Continuously tracking of wall-clocks
-    rp->sync.paused = false;
-    int64_t lclk;
-	int64_t rclk;
-    while(1)
-    {
-    	lclk =  rp_normalized_vmclk(rp);
-    	atomic_set(rp->sync.lclk, lclk);
-    	rclk = atomic_read(rp->sync.rclk);
-
-    	if(lclk > (rclk + rp->sync.quantum))
-    	{
-    		if(!atomic_read(&rp->sync.paused))
-    		{
-    			//Pause the local clock
-    			atomic_set(&rp->sync.paused, true);
-    			qemu_bh_schedule(rp->sync.bh_sync_wallclocks);
-    		}
-    	}
-    }
-    return NULL;
-}
-#endif
-
 static void *rp_protocol_thread(void *arg)
 {
     RemotePort *s = REMOTE_PORT(arg);
@@ -891,11 +892,6 @@ static void rp_realize(DeviceState *dev, Error **errp)
        After config negotiation with the peer, sync.quantum value might
        change.  */
     s->sync.quantum = s->peer.local_cfg.quantum;
-
-    s->sync.simTimeSync = 0;
-    s->sync.simTimeMemAccess = 0;
-    s->sync.simTimeBase = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-
     s->sync.bh = qemu_bh_new(sync_timer_hit, s);
     s->sync.bh_resp = qemu_bh_new(syncresp_timer_hit, s);
     s->sync.ptimer = ptimer_init(s->sync.bh, PTIMER_POLICY_DEFAULT);
@@ -908,14 +904,15 @@ static void rp_realize(DeviceState *dev, Error **errp)
     qemu_sem_init(&s->rx_queue.sem, ARRAY_SIZE(s->rx_queue.pkt) - 1);
     qemu_thread_create(&s->thread, "remote-port", rp_protocol_thread, s,
                        QEMU_THREAD_JOINABLE);
-#ifdef WALLCLOCK_SYNC_EN
-    //Initialization
-    if (rp_sync_createSharedWallclocks(s) == -1) {
-    	rp_fatal_error(s, "shared Wallclocks could not be created");
+#ifdef SH_CLK_EN
+	char *shMemDesc = rp_autocreate_descShm(s);
+	int shMemId = rp_sharedClock_init(&s->sharedClock, shMemDesc, s->peer.local_cfg.quantum);
+	free(shMemDesc);
+    if (shMemId == -1)
+    {
+        error_report("%s: Unable to create remort-port's shared clocks \n", s->prefix);
+        exit(EXIT_FAILURE);
     }
-    s->sync.bh_sync_wallclocks = qemu_bh_new(rp_sync_wallclocks, s);
-    qemu_thread_create(&s->sync.thread, "remote-port-sync", rp_sync_thread, s,
-    		QEMU_THREAD_JOINABLE);
 #else
     rp_restart_sync_timer(s);
 #endif

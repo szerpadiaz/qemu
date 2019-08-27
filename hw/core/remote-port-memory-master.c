@@ -69,9 +69,6 @@ struct RemotePortMemoryMaster {
 
 static void rp_io_access(MemoryTransaction *tr)
 {
-#ifdef LOG_SYNC_EN
-    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-#endif
     uint64_t addr = tr->addr;
     RemotePortMap *map = tr->opaque;
     RemotePortMemoryMaster *s = map->parent;
@@ -140,9 +137,9 @@ static void rp_io_access(MemoryTransaction *tr)
     rp_resp_slot_done(s->rp, rsp_slot);
     rp_rsp_mutex_unlock(s->rp);
     rp_sync_vmclock(s->rp, in.clk, rclk);
-#ifdef WALLCLOCK_SYNC_EN
-    atomic_set(s->rp->sync.lclk, in.clk);
-    rclk = atomic_read(s->rp->sync.rclk);
+#ifdef SH_CLK_EN
+    atomic_set(s->rp->sharedClock.lclk, in.clk);
+    rclk = atomic_read(s->rp->sharedClock.rclk);
 #else
     /* Reads are sync-points, roll the sync timer.  */
     rp_restart_sync_timer(s->rp);
@@ -151,9 +148,7 @@ static void rp_io_access(MemoryTransaction *tr)
     DB_PRINT_L(1, "\n");
 
 #ifdef LOG_SYNC_EN
-    int64_t current = qemu_clock_get_ns(QEMU_CLOCK_HOST);
-    s->rp->sync.simTimeMemAccess += (current - start);
-    fprintf(stderr, "%ld ; %ld ; %ld ; %ld ; %ld \n", in.clk, rclk, current - s->rp->sync.simTimeBase, s->rp->sync.simTimeSync, s->rp->sync.simTimeMemAccess);
+    fprintf(stderr, "%ld ; %ld \n", in.clk, rclk);
 #endif
 }
 

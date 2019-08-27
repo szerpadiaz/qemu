@@ -29,6 +29,16 @@ typedef struct RemotePortRespSlot {
             bool valid;
 } RemotePortRespSlot;
 
+typedef struct RemotePortSharedClock {
+	int64_t *lclk;
+	int64_t *rclk;
+	int64_t clk_base;
+	uint64_t quantum;
+	bool paused;
+	QemuThread thread;
+	QEMUBH *bh_sync;
+} RemotePortSharedClock;
+
 struct RemotePort {
     DeviceState parent;
 
@@ -58,17 +68,9 @@ struct RemotePort {
         bool need_sync;
         struct rp_pkt rsp;
         uint64_t quantum;
-        int64_t simTimeSync;
-        int64_t simTimeMemAccess;
-        int64_t simTimeBase;
-
-        //Shared wallclocks
-        int64_t *lclk;
-        int64_t *rclk;
-        QemuThread thread;
-        bool paused;
-        QEMUBH *bh_sync_wallclocks;
     } sync;
+
+    RemotePortSharedClock sharedClock;
 
     QemuMutex rsp_mutex;
     QemuCond progress_cond;
